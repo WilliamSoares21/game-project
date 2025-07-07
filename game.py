@@ -9,14 +9,13 @@
 import math
 import random
 from pygame import Rect # Permissão explícita para usar Rect do Pygame
-import pygame.mixer  # Adicionar esta linha
-
+import pygame.mixer  # Adicionando esta linha para o funcionamento do mixer de áudio
+from pgzero.builtins import Actor, keyboard, music, sounds, images
 # Explicação da Decisão:
 # - Manter as importações mínimas e conforme os requisitos evita dependências desnecessárias
 #   e mantém o projeto leve e focado.
 # - A importação de 'Rect' é crucial, pois ela oferece funcionalidades de retângulo (posição, tamanho, colisão)
 #   de forma eficiente, mesmo que outras partes do Pygame não sejam usadas diretamente.
-
 
 # 2. Configurações Globais do Jogo
 # Estas variáveis definem o tamanho da janela, o título e as propriedades da grade do jogo.
@@ -27,8 +26,14 @@ TITLE = "Simple Roguelike Adventure" # Título que aparecerá na barra da janela
 TILE_SIZE = 64 # Define o tamanho de cada célula (quadrado) na nossa grade. Um valor comum para pixel art.
 GRID_WIDTH = WIDTH // TILE_SIZE # Calcula quantas células cabem na largura da tela.
 GRID_HEIGHT = HEIGHT // TILE_SIZE # Calcula quantas células cabem na altura da tela.
+# Explicação da Decisão:
+# - Constantes em maiúsculas (PEP8) tornam o código mais legível e fácil de modificar.
+# - Definir TILE_SIZE e calcular GRID_WIDTH/HEIGHT facilita o movimento em grade e o posicionamento de objetos.
+# - GAME_STATE é um padrão comum em jogos para gerenciar diferentes telas/lógicas.
+# - Variáveis 'player' e 'enemies' inicializadas como None/vazio permitem um "estado inicial limpo".
 
 GAME_STATE = "MENU" # A variável global que controla em qual "estado" o jogo está (menu, jogando, game over).
+
 
 # Variáveis globais para o jogador e inimigos.
 # Serão inicializadas apenas quando o jogo começar, garantindo um reset limpo.
@@ -36,11 +41,23 @@ player = None
 enemies = []
 music_enabled = True # Flag para controlar o estado da música e dos sons.
 
+# Variáveis para a mecânica de Chave e Porta
+key = None # Objeto Actor para a chave
+door = None # Objeto Actor para a porta
+player_has_key = False # Flag booleana: True se o jogador pegou a chave
+
 # Explicação da Decisão:
-# - Constantes em maiúsculas (PEP8) tornam o código mais legível e fácil de modificar.
-# - Definir TILE_SIZE e calcular GRID_WIDTH/HEIGHT facilita o movimento em grade e o posicionamento de objetos.
-# - GAME_STATE é um padrão comum em jogos para gerenciar diferentes telas/lógicas.
-# - Variáveis 'player' e 'enemies' inicializadas como None/vazio permitem um "estado inicial limpo".
+# - 'key' e 'door' como None inicialmente, assim como 'player' e 'enemies',
+#   para serem criados apenas quando o jogo iniciar.
+# - 'player_has_key' é uma flag simples e eficaz para controlar a posse da chave pelo jogador.
+
+# Variáveis para Sons da Porta ---
+door_open_sound = None
+door_close_sound = None
+
+# Explicação da Decisão:
+# - Pré-carregar os sons em variáveis globais evita carregar o arquivo do disco repetidamente,
+#   melhorando a performance e evitando lags no áudio.
 
 # 3. Definição das Animações
 # Dicionários que mapeiam nomes de animações (strings) para listas de nomes de arquivos de imagem.
@@ -348,8 +365,10 @@ class Enemy(Character):
 
 def start_game():
     """Define o estado do jogo para 'PLAYING' e inicializa o jogador e os inimigos."""
-    global GAME_STATE, player, enemies, music_enabled # Declarar como global para modificar
+    global GAME_STATE, player, enemies, music_enabled, key, door, player_has_key # Declarar como global para modificar
+
     GAME_STATE = "PLAYING"
+    player_has_key = False # Reseta a flag da chave
 
     # Cria a instância do jogador no centro da grade
     player = Player(GRID_WIDTH // 2, GRID_HEIGHT // 2, 150, player_animations) # Velocidade 150 pixels/segundo
@@ -364,6 +383,64 @@ def start_game():
             if distance >= 3: # Garante distância mínima de 3 tiles
                 break
         enemies.append(Enemy(e_tile_x, e_tile_y, 100, enemy_animations)) # Velocidade 100 pixels/segundo
+
+    # Posicionar a chave em um tile aleatório, garantindo que não seja no mesmo tile do jogador ou de um inimigo.
+    while True:
+        key_tile_x = random.randint(0, GRID_WIDTH - 1)
+        key_tile_y = random.randint(0, GRID_HEIGHT - 1)
+        
+        # Verifica distância do jogador (Manhattan distance)
+        dist_key_player = abs(key_tile_x - player.current_tile_x) + abs(key_tile_y - player.current_tile_y)
+        if dist_key_player < 5: # Chave longe do jogador inicial (use 5 para uma boa distância)
+            continue
+
+        # Verifica se não está em cima de um inimigo
+        is_on_enemy = False
+        for enemy in enemies:
+            if key_tile_x == enemy.current_tile_x and key_tile_y == enemy.current_tile_y:
+                is_on_enemy = True
+                break
+        if not is_on_enemy:
+            break # Posição da chave é válida
+
+    key_x = key_tile_x * TILE_SIZE + TILE_SIZE / 2
+    key_y = key_tile_y * TILE_SIZE + TILE_SIZE / 2
+    key = Actor("key", (key_x, key_y)) # Cria o Actor da chave
+
+    # Posicionar a porta em um tile aleatório, longe da chave e do jogador inicial.
+    while True:
+        door_tile_x = random.randint(0, GRID_WIDTH - 1)
+        door_tile_y = random.randint(0, GRID_HEIGHT - 1)
+
+        # Verifica distância do jogador
+        dist_door_player = abs(door_tile_x - player.current_tile_x) + abs(door_tile_y - player.current_tile_y)
+        if dist_door_player < 5: # Porta longe do jogador inicial
+            continue
+
+        # Verifica distância da chave
+        dist_door_key = abs(door_tile_x - key_tile_x) + abs(door_tile_y - key_tile_y)
+        if dist_door_key < 5: # Porta longe da chave
+            continue
+        
+        # Verifica se não está em cima de um inimigo
+        is_on_enemy_door = False
+        for enemy in enemies:
+            if door_tile_x == enemy.current_tile_x and door_tile_y == enemy.current_tile_y:
+                is_on_enemy_door = True
+                break
+        if not is_on_enemy_door:
+            break # Posição da porta é válida
+
+    door_x = door_tile_x * TILE_SIZE + TILE_SIZE / 2
+    door_y = door_tile_y * TILE_SIZE + TILE_SIZE / 2
+    door = Actor("door-closed", (door_x, door_y)) # Porta começa fechada
+
+# Explicação da Decisão:
+# - 'key' e 'door' são instanciados como Actor.
+# - A lógica de spawn garante que a chave e porta apareçam em locais acessíveis e não sobrepostos.
+#   Aumentei a distância mínima para 5 tiles para evitar que o jogador já comece vendo a chave/porta muito perto,
+#   incentivando a exploração.
+        
 
 # Explicação da Decisão:
 # - Centralizar a inicialização do jogo em 'start_game()' permite resetar o jogo facilmente
@@ -436,6 +513,7 @@ def update(dt):
     Processa toda a lógica do jogo (movimento, colisões, input).
     """
     global GAME_STATE, player, enemies
+    global key, door, player_has_key # Declarar como global para modificar
 
     if GAME_STATE == "PLAYING":
         if player:
@@ -449,6 +527,33 @@ def update(dt):
                 GAME_STATE = "GAME_OVER"
                 # Opcional: sound.play("game_over_sound") # Tocar um som de game over
                 break # Importante: sai do loop dos inimigos para evitar mais lógica de jogo após o game over.
+
+        # Lógica da Chave e da Porta ---
+        if player and key and not player_has_key: # Se o jogador não pegou a chave ainda
+            if player.actor.colliderect(key): # Verifica colisão com a chave
+                player_has_key = True # Jogador pegou a chave
+                key = None # Remove a chave da tela (definindo como None, não será desenhada)
+                # Opcional: tocar um som de coletar item aqui
+                print("Você pegou a chave!") # Mensagem de debug ou HUD
+
+        if player and door: # Se o jogador e a porta existem
+            if player.actor.colliderect(door): # Verifica colisão com a porta
+                if player_has_key: # Se o jogador tem a chave
+                    # Se a porta ainda estiver fechada (para evitar som repetido)
+                    if door.image == "door-closed":
+                        # Tocar som de porta abrindo
+                        if door_open_sound:
+                            door_open_sound.play()
+                        door.image = "door-open" # Muda a imagem da porta para aberta
+                        print("Parabéns! Você abriu a porta e completou o objetivo!")
+                        # Mudar para a nova tela de vitória
+                        GAME_STATE = "VICTORY_SCREEN" # Novo estado para tela de vitória
+
+                else: # Se o jogador NÃO tem a chave
+                    # Tocar som de porta fechada
+                    print("Você precisa da chave para abrir esta porta!") # Mensagem de debug ou HUD
+                    if door_close_sound:
+                        door_close_sound.play()
 
         # Lógica de Input do Jogador (teclado)
         # O jogador só pode iniciar um novo movimento se não estiver em transição (movimento suave).
@@ -470,14 +575,18 @@ def update(dt):
             if new_tile_x != player.current_tile_x or new_tile_y != player.current_tile_y:
                 player.move_to_tile(new_tile_x, new_tile_y)
     
-    elif GAME_STATE == "GAME_OVER":
-        # Adicionar lógica de teclas R e Esc aqui no update para funcionar corretamente
-        if keyboard.r: # Se a tecla 'R' estiver pressionada no Game Over
+    elif GAME_STATE == "GAME_OVER" or GAME_STATE == "VICTORY_SCREEN":
+        # Adicionar lógica de teclas R e Esc para ambos os estados
+        if keyboard.r: # Se a tecla 'R' estiver pressionada
             start_game() # Reinicia o jogo
         elif keyboard.escape: # Se a tecla 'Esc' estiver pressionada
             GAME_STATE = "MENU" # Volta para o menu
             player = None
             enemies = []
+            # Limpar chave e porta ao voltar para o menu
+            key = None
+            door = None
+            player_has_key = False
 
 # Explicação da Decisão:
 # - 'update(dt)' é o coração do jogo, onde toda a lógica de movimento, colisão e input é processada.
@@ -533,11 +642,29 @@ def draw():
             player.draw()
         for enemy in enemies: # Desenha cada inimigo
             enemy.draw()
+        
+        # Desenhar Chave e Porta ---
+        if key: # Só desenha a chave se ela existir (não foi coletada)
+            key.draw()
+        if door: # Desenha a porta (sempre existe no jogo)
+            door.draw()
+
+        # Opcional: HUD para indicar se tem a chave
+        if player_has_key:
+            screen.draw.text("CHAVE: PEGA!", (10, 10), color="yellow", fontsize=30)
+        else:
+            screen.draw.text("CHAVE: FALTA", (10, 10), color="white", fontsize=30)
 
     elif GAME_STATE == "GAME_OVER":
         screen.fill((50, 0, 0)) # Fundo vermelho escuro para indicar Game Over
         screen.draw.text("GAME OVER", center=(WIDTH / 2, HEIGHT / 2 - 50), color="white", fontsize=80)
         screen.draw.text("Press R to Restart or Esc to Menu", center=(WIDTH / 2, HEIGHT / 2 + 50), color="white", fontsize=30)
+
+    # Tela de Vitória ---
+    elif GAME_STATE == "VICTORY_SCREEN":
+        screen.fill((0, 50, 0)) # Fundo verde para vitória
+        screen.draw.text("OBJETIVO CONCLUÍDO!", center=(WIDTH / 2, HEIGHT / 2 - 50), color="white", fontsize=80)
+        screen.draw.text("Parabéns! Pressione R para Reiniciar ou Esc para o Menu.", center=(WIDTH / 2, HEIGHT / 2 + 50), color="white", fontsize=30)
 
 # Explicação da Decisão:
 # - 'draw()' é responsável por apresentar visualmente o estado atual do jogo.
@@ -590,7 +717,7 @@ def on_app_start():
     """
     Função chamada automaticamente uma vez no início da aplicação PgZero.
     """
-    print("=== INICIALIZANDO MÚSICA COM PYGAME.MIXER ===")
+    print("=== INICIALIZANDO MÚSICA E SONS COM PYGAME.MIXER ===")
     try:
         # Inicializar o mixer do pygame
         pygame.mixer.init()
@@ -601,11 +728,16 @@ def on_app_start():
         pygame.mixer.music.set_volume(0.7)
         pygame.mixer.music.play(-1)  # -1 = loop infinito
         
-        print("✅ MÚSICA INICIADA COM SUCESSO!")
+        # Carregar os sons da porta
+        global door_open_sound, door_close_sound
+        door_open_sound = pygame.mixer.Sound("sounds/door-open-close.ogg")
+        door_close_sound = pygame.mixer.Sound("sounds/door-close.ogg")
+        
+        print("✅ MÚSICA E SONS INICIADOS COM SUCESSO!")
         
     except Exception as e:
-        print(f"❌ ERRO ao iniciar música: {e}")
-        print("Continuando sem música...")
+        print(f"❌ ERRO ao iniciar música/sons: {e}")
+        print("Continuando sem áudio...")
     
     global music_enabled
     music_enabled = True
@@ -621,6 +753,4 @@ def on_app_start():
 # - Iniciar a música aqui garante que ela toque desde o momento em que o jogo é aberto,
 #   cumprindo o requisito de "Música de fundo".
 
-# Chame a função de inicialização do aplicativo no final do script.
-# IMPORTANTE: Esta linha faz com que 'on_app_start' seja executada.
 on_app_start()
